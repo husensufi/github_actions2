@@ -356,7 +356,7 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: false
-        env:
+        env: 
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 📝 Job Summary
