@@ -1,0 +1,38 @@
+# Dependency directories
+node_modules/
+
+# Next.js build output
+.next/
+out/
+build/
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Git version control
+.git/
+.gitignore
+
+# CI/CD and Docker configuration
+.github/
+Dockerfile
+docker-compose*.yml
+.dockerignore
+.antigravityignore
+
+# Local environment files
+.env
+.env*.local
+
+# Documentation and License
+*.md
+LICENSE
+LICENSE.md
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
