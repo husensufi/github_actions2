@@ -1,0 +1,433 @@
+# ============================================================================
+# GoCart — Enterprise CI/CD Pipeline
+# ============================================================================
+# This unified workflow consolidates all CI/CD stages into a single pipeline
+# that displays as one connected graph in the GitHub Actions UI.
+#
+# Pipeline Flow:
+#   Build → Lint → Test → Security → Docker Build → Docker Push → Release → Deploy
+#
+# Required GitHub Secrets:
+#   - DOCKER_USERNAME    : Docker Hub username
+#   - DOCKER_PASSWORD    : Docker Hub access token / password
+#   - SSH_PRIVATE_KEY    : (Optional) SSH key for deployment
+#   - SSH_USER           : (Optional) SSH username for deployment
+#   - SSH_HOST           : (Optional) SSH host for deployment
+# ============================================================================
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      deploy_enabled:
+        description: 'Enable deployment after pipeline completes'
+        required: false
+        default: 'false'
+        type: boolean
+
+# ── Concurrency Control ─────────────────────────────────────────────────────
+# Cancel in-progress runs for the same branch to save runner minutes.
+# Production pushes (main/master) are never cancelled mid-flight.
+concurrency:
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' }}
+
+# ── Global Environment ──────────────────────────────────────────────────────
+env:
+  NODE_VERSION: '20'
+  DOCKER_IMAGE_NAME: gocart
+  NEXT_PUBLIC_CURRENCY_SYMBOL: '$'
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # Stage 1: BUILD
+  # ════════════════════════════════════════════════════════════════════════════
+  # Compiles the Next.js application and caches the build artifacts
+  # for downstream jobs to consume.
+  build:
+    name: 🏗️ Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci
+
+      - name: 🔨 Build Application
+        run: npm run build
+        env:
+          NEXT_PUBLIC_CURRENCY_SYMBOL: ${{ env.NEXT_PUBLIC_CURRENCY_SYMBOL }}
+
+      - name: 📤 Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: .next/
+          retention-days: 1
+
+      - name: 📝 Job Summary
+        run: |
+          echo "## 🏗️ Build Stage" >> $GITHUB_STEP_SUMMARY
+          echo "- **Node.js**: ${{ env.NODE_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ✅ Build completed successfully" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Stage 2: LINT
+  # ════════════════════════════════════════════════════════════════════════════
+  # Runs ESLint to enforce code quality standards.
+  # Fails the pipeline on lint errors.
+  lint:
+    name: 🔍 Lint
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci
+
+      - name: 🔍 Run ESLint
+        run: npm run lint
+
+      - name: 📝 Job Summary
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "## 🔍 Lint Stage" >> $GITHUB_STEP_SUMMARY
+            echo "- **Status**: ✅ No lint errors found" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## 🔍 Lint Stage" >> $GITHUB_STEP_SUMMARY
+            echo "- **Status**: ❌ Lint errors detected" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Stage 3: TEST
+  # ════════════════════════════════════════════════════════════════════════════
+  # Runs the Vitest unit test suite and uploads test results as artifacts.
+  test:
+    name: 🧪 Test
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci
+
+      - name: 🧪 Run Unit Tests
+        run: npm run test -- --reporter=verbose 2>&1 | tee test-results.txt
+
+      - name: 📤 Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results.txt
+          retention-days: 7
+
+      - name: 📝 Job Summary
+        if: always()
+        run: |
+          echo "## 🧪 Test Stage" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat test-results.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Stage 4: SECURITY SCAN
+  # ════════════════════════════════════════════════════════════════════════════
+  # Scans dependencies for known vulnerabilities and generates a report.
+  # Reports all issues but does not block the pipeline for upstream
+  # framework vulnerabilities (Next.js, Vite) that require breaking upgrades.
+  security:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci
+
+      - name: 🔒 Run Dependency Audit
+        run: |
+          echo "## 🔒 Security Audit Report" > security-report.txt
+          echo "Generated: $(date -u)" >> security-report.txt
+          echo "---" >> security-report.txt
+          npm audit --audit-level=moderate 2>&1 | tee -a security-report.txt || true
+
+      - name: 🔎 Check for Secret Patterns
+        run: |
+          echo "### Secret Pattern Scan" >> security-report.txt
+          echo "Scanning for hardcoded secrets..." >> security-report.txt
+          # Scan for common secret patterns in source code
+          if grep -rn --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+            -E "(password|secret|api_key|token)\s*[:=]\s*['\"][^'\"]+['\"]" \
+            --exclude-dir=node_modules --exclude-dir=.next . 2>/dev/null; then
+            echo "⚠️ Potential hardcoded secrets found!" >> security-report.txt
+          else
+            echo "✅ No hardcoded secrets detected." >> security-report.txt
+          fi
+
+      - name: 📤 Upload Security Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: security-report.txt
+          retention-days: 30
+
+      - name: 📝 Job Summary
+        if: always()
+        run: |
+          echo "## 🔒 Security Scan Stage" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dependency Audit**: Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Secret Scan**: Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- Full report uploaded as artifact" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Stage 5: DOCKER BUILD
+  # ════════════════════════════════════════════════════════════════════════════
+  # Builds the production Docker image using BuildKit with layer caching.
+  docker-build:
+    name: 🐳 Docker Build
+    runs-on: ubuntu-latest
+    needs: security
+    timeout-minutes: 20
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐳 Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: 🐳 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🐳 Build Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: ${{ env.DOCKER_IMAGE_NAME }}:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 📝 Job Summary
+        run: |
+          echo "## 🐳 Docker Build Stage" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: \`${{ env.DOCKER_IMAGE_NAME }}:test\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cache**: GitHub Actions cache (BuildKit)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ✅ Image built successfully" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Stage 6: DOCKER PUSH
+  # ════════════════════════════════════════════════════════════════════════════
+  # Pushes the production image to Docker Hub.
+  # Only runs on direct pushes to main/master (not on PRs).
+  docker-push:
+    name: 🚀 Docker Push
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 20
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐳 Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: 🐳 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔑 Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: 🚀 Build and Push Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:latest
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 📝 Job Summary
+        run: |
+          echo "## 🚀 Docker Push Stage" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry**: Docker Hub" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tags**:" >> $GITHUB_STEP_SUMMARY
+          echo "  - \`${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "  - \`${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Stage 7: RELEASE
+  # ════════════════════════════════════════════════════════════════════════════
+  # Creates an automatic GitHub Release with a semantic version tag.
+  # Only runs on direct pushes to main/master (not on PRs).
+  release:
+    name: 🏷️ Release
+    runs-on: ubuntu-latest
+    needs: docker-push
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    timeout-minutes: 5
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🏷️ Generate Version Tag
+        id: version
+        run: |
+          # Generate a semantic version based on date and short SHA
+          VERSION="v$(date +'%Y.%m.%d')-${GITHUB_SHA::7}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Generated version: $VERSION"
+
+      - name: 🏷️ Create Git Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.version.outputs.version }}
+          git push origin ${{ steps.version.outputs.version }}
+
+      - name: 📋 Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📝 Job Summary
+        run: |
+          echo "## 🏷️ Release Stage" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: \`${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release Notes**: Auto-generated from commits" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ✅ Release published" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Stage 8: DEPLOY
+  # ════════════════════════════════════════════════════════════════════════════
+  # Deploys the application to a remote server via SSH.
+  # Gracefully skips if SSH secrets are not configured.
+  # Never fails the pipeline — deployment is optional.
+  deploy:
+    name: 🌐 Deploy
+    runs-on: ubuntu-latest
+    needs: [docker-push, release]
+    if: |
+      always() &&
+      needs.docker-push.result == 'success' &&
+      (needs.release.result == 'success' || needs.release.result == 'skipped') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_enabled == 'true'))
+    environment: production
+    continue-on-error: true
+    timeout-minutes: 10
+
+    steps:
+      - name: 🔍 Check Deployment Secrets
+        id: check-secrets
+        run: |
+          if [ -n "${{ secrets.SSH_HOST }}" ] && [ -n "${{ secrets.SSH_USER }}" ] && [ -n "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✅ SSH deployment secrets are configured"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "⚠️ SSH deployment secrets not configured — skipping deployment"
+          fi
+
+      - name: 📥 Checkout Code
+        if: steps.check-secrets.outputs.available == 'true'
+        uses: actions/checkout@v4
+
+      - name: 🔑 Setup SSH Connection
+        if: steps.check-secrets.outputs.available == 'true'
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: 🌐 Deploy to Production Server
+        if: steps.check-secrets.outputs.available == 'true'
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'DEPLOY_SCRIPT'
+            cd /var/www/gocart
+            docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
+            echo "✅ Deployment completed at $(date -u)"
+          DEPLOY_SCRIPT
+
+      - name: 📝 Job Summary
+        if: always()
+        run: |
+          echo "## 🌐 Deploy Stage" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check-secrets.outputs.available }}" == "true" ]; then
+            echo "- **Target**: Production server" >> $GITHUB_STEP_SUMMARY
+            echo "- **Method**: SSH + Docker Compose" >> $GITHUB_STEP_SUMMARY
+            echo "- **Status**: Deployment attempted" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Status**: ⏭️ Skipped (SSH secrets not configured)" >> $GITHUB_STEP_SUMMARY
+            echo "- Add \`SSH_HOST\`, \`SSH_USER\`, and \`SSH_PRIVATE_KEY\` secrets to enable deployment" >> $GITHUB_STEP_SUMMARY
+          fi

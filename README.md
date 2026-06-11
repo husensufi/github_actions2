@@ -212,49 +212,63 @@ docker pull <username>/gocart:latest
 
 ---
 
-## 🤖 GitHub Actions Workflows
+## 🤖 GitHub Actions CI/CD Pipeline (`cicd.yml`)
 
-We have configured **8 distinct workflows** under [.github/workflows/](file:///d:/github/gocart/.github/workflows/) to automate our CI/CD processes.
+We have redesigned and consolidated the 8 separate workflow files into a single enterprise-grade, unified pipeline located at [.github/workflows/cicd.yml](file:///d:/github/gocart/.github/workflows/cicd.yml). This enables a single connected graph in the GitHub Actions UI with strict dependency chaining, concurrency controls, environment support, cache optimizations, and automated job summaries.
 
-### 1. CI Build Workflow (`ci-build.yml`)
-- **Triggers**: Pushes and PRs to `main` and `master`.
-- **Purpose**: Verifies that the Next.js project compiles without TypeScript or build issues.
-- **Key Commands**: `npm ci`, `npm run build`.
+### 📊 Pipeline Architecture
 
-### 2. Code Quality / Lint Workflow (`lint.yml`)
-- **Triggers**: Pushes and PRs to `main` and `master`.
-- **Purpose**: Checks code styling and ESLint formatting errors.
-- **Key Commands**: `npm run lint`.
+```text
+┌─────────────────┐
+│    1. Build     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│     2. Lint     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│     3. Test     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 4. Security Scan│
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 5. Docker Build │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 6. Docker Push  │ ◄── [Runs only on Push & workflow_dispatch]
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   7. Release    │ ◄── [Runs only on Push]
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│    8. Deploy    │ ◄── [Runs on Push & workflow_dispatch (if enabled)]
+└─────────────────┘
+```
 
-### 3. Unit Test Workflow (`test.yml`)
-- **Triggers**: Pushes and PRs to `main` and `master`.
-- **Purpose**: Runs automated unit tests via Vitest.
-- **Key Commands**: `npm run test`.
+### ⚙️ Pipeline Jobs & Dependency Breakdown
 
-### 4. Security Scan Workflow (`security.yml`)
-- **Triggers**: Pushes and PRs to `main` and `master`.
-- **Purpose**: Audits external package dependencies for known vulnerabilities.
-- **Key Commands**: `npm audit --audit-level=high`.
-
-### 5. Docker Build Workflow (`docker-build.yml`)
-- **Triggers**: PRs targeting `main` and `master`.
-- **Purpose**: Validates that the multi-stage Dockerfile successfully builds without committing the image to Docker Hub.
-- **Key Actions**: `docker/build-push-action@v5` (with `push: false`).
-
-### 6. Docker Hub Push Workflow (`docker-push.yml`)
-- **Triggers**: Direct pushes/merges to `main` and `master`.
-- **Purpose**: Builds the production Docker image, tags it with both `:latest` and the commit SHA, and pushes it to Docker Hub.
-- **Secrets Used**: `DOCKER_USERNAME`, `DOCKER_PASSWORD`.
-
-### 7. Release Workflow (`release.yml`) (Bonus)
-- **Triggers**: Tag push of format `v*` (e.g. `v1.0.0`).
-- **Purpose**: Automatically generates a GitHub Release draft and compiles release notes.
-- **Key Actions**: `softprops/action-gh-release@v2`.
-
-### 8. Deployment Workflow (`deploy.yml`) (Bonus)
-- **Triggers**: Direct pushes to `main` and `master`. Also manually triggerable (`workflow_dispatch`).
-- **Purpose**: Connects securely via SSH to a staging or production server, pulls the newly uploaded Docker image, and recreates the service stack using `docker compose`.
-- **Secrets Used**: `SSH_PRIVATE_KEY`, `SSH_USER`, `SSH_HOST`, `DOCKER_USERNAME`, `DOCKER_PASSWORD`.
+1. **🏗️ Build**: Checks out code, setups Node.js 20, caches npm packages, installs dependencies, compiles the Next.js app, and uploads the `.next/` build output to shared workspace artifacts.
+2. **🔍 Lint** (*Needs: Build*): Performs static analysis to enforce code quality using ESLint (`npm run lint`).
+3. **🧪 Test** (*Needs: Lint*): Runs automated Vitest unit tests, generates reports, and uploads them.
+4. **🔒 Security Scan** (*Needs: Test*): Scans npm packages for vulnerabilities (`npm audit`) and runs an active scanner looking for hardcoded keys/secrets. Uploads the security report.
+5. **🐳 Docker Build** (*Needs: Security Scan*): Sets up Docker Buildx/QEMU, builds the Dockerfile locally using GitHub Actions layer cache, and validates image integrity.
+6. **🚀 Docker Push** (*Needs: Docker Build*): Runs on main/master branches or manual dispatch. Logs into Docker Hub and pushes the image tagged with `:latest` and the commit SHA (`:${{ github.sha }}`).
+7. **🏷️ Release** (*Needs: Docker Push*): Runs on push merges to main/master. Automatically generates a version tag (`vYYYY.MM.DD-sha`), creates it on Git, and publishes a GitHub Release with auto-generated release notes.
+8. **🌐 Deploy** (*Needs: [Docker Push, Release]*): Runs on push merges or manual dispatch with `deploy_enabled: true`. Connects via SSH, logs into Docker Hub, pulls the new image, restarts the services using `docker compose`, and cleans old images. If deployment secrets are missing, it gracefully skips without failing the pipeline.
 
 ---
 
@@ -266,9 +280,9 @@ To enable Docker Hub push and automated deployments, configure the following sec
 | :--- | :--- | :--- |
 | `DOCKER_USERNAME` | Your Docker Hub Username | `myusername` |
 | `DOCKER_PASSWORD` | Your Docker Hub Personal Access Token (PAT) | `dckr_pat_xxxx` |
-| `SSH_PRIVATE_KEY` | Private SSH key of the production VPS / server | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
-| `SSH_USER` | SSH Username for server access | `ubuntu` |
-| `SSH_HOST` | IPv4 address or domain of the deployment server | `192.168.1.100` |
+| `SSH_PRIVATE_KEY` | Private SSH key of the production VPS / server (optional) | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
+| `SSH_USER` | SSH Username for server access (optional) | `ubuntu` |
+| `SSH_HOST` | IPv4 address or domain of the deployment server (optional) | `192.168.1.100` |
 
 ---
 
