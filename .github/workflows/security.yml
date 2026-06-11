@@ -39,4 +39,4 @@ jobs:
           echo "---"
           echo "Security scan complete. Review the full audit report above."
           echo "Upstream vulnerabilities in frameworks (Next.js, Vite) require"
-          echo "major version upgrades and should be tracked separately."
+          echo "major version upgrades and should be tracked separately"
