@@ -24,7 +24,6 @@
 - [🤖 GitHub Actions Workflows](#-github-actions-workflows)
 - [🔐 GitHub Secrets Setup Guide](#-github-secrets-setup-guide)
 - [🔍 Running Tests & Linting](#-running-tests--linting)
-- [🎛️ Deployment Instructions](#%EF%B8%8F-deployment-instructions)
 - [⚠️ Troubleshooting Guide](#%EF%B8%8F-troubleshooting-guide)
 - [🤝 Contributing Guidelines](#-contributing-guidelines)
 - [📘 DevOps & CI/CD Comprehensive Guide](#-devops--cicd-comprehensive-guide)
@@ -61,14 +60,7 @@
 ```text
 gocart/
 ├── .github/workflows/          # GitHub Actions CI/CD workflows
-│   ├── ci-build.yml            # Compilation verification
-│   ├── lint.yml                # ESLint code quality checks
-│   ├── test.yml                # Unit testing with Vitest
-│   ├── security.yml            # Dependency vulnerability scanning
-│   ├── docker-build.yml        # Dockerfile validation on PRs
-│   ├── docker-push.yml         # Production image push to Docker Hub
-│   ├── release.yml             # Automated GitHub release on tags
-│   └── deploy.yml              # Simulated production deployment via SSH
+│   └── cicd.yml                # Unified CI/CD pipeline
 ├── app/                        # Next.js App Router folders
 ├── assets/                     # Application assets and dummy data
 ├── components/                 # Shared React components
@@ -251,11 +243,6 @@ We have redesigned and consolidated the 8 separate workflow files into a single 
          ▼
 ┌─────────────────┐
 │   7. Release    │ ◄── [Runs only on Push]
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    8. Deploy    │ ◄── [Runs on Push & workflow_dispatch (if enabled)]
 └─────────────────┘
 ```
 
@@ -268,21 +255,17 @@ We have redesigned and consolidated the 8 separate workflow files into a single 
 5. **🐳 Docker Build** (*Needs: Security Scan*): Sets up Docker Buildx/QEMU, builds the Dockerfile locally using GitHub Actions layer cache, and validates image integrity.
 6. **🚀 Docker Push** (*Needs: Docker Build*): Runs on main/master branches or manual dispatch. Logs into Docker Hub and pushes the image tagged with `:latest` and the commit SHA (`:${{ github.sha }}`).
 7. **🏷️ Release** (*Needs: Docker Push*): Runs on push merges to main/master. Automatically generates a version tag (`vYYYY.MM.DD-sha`), creates it on Git, and publishes a GitHub Release with auto-generated release notes.
-8. **🌐 Deploy** (*Needs: [Docker Push, Release]*): Runs on push merges or manual dispatch with `deploy_enabled: true`. Connects via SSH, logs into Docker Hub, pulls the new image, restarts the services using `docker compose`, and cleans old images. If deployment secrets are missing, it gracefully skips without failing the pipeline.
 
 ---
 
 ## 🔐 GitHub Secrets Setup Guide
 
-To enable Docker Hub push and automated deployments, configure the following secrets in your GitHub repository (**Settings > Secrets and variables > Actions > New repository secret**):
+To enable Docker Hub push, configure the following secrets in your GitHub repository (**Settings > Secrets and variables > Actions > New repository secret**):
 
 | Secret Name | Description | Example |
 | :--- | :--- | :--- |
 | `DOCKER_USERNAME` | Your Docker Hub Username | `myusername` |
 | `DOCKER_PASSWORD` | Your Docker Hub Personal Access Token (PAT) | `dckr_pat_xxxx` |
-| `SSH_PRIVATE_KEY` | Private SSH key of the production VPS / server (optional) | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
-| `SSH_USER` | SSH Username for server access (optional) | `ubuntu` |
-| `SSH_HOST` | IPv4 address or domain of the deployment server (optional) | `192.168.1.100` |
 
 ---
 
@@ -303,17 +286,6 @@ To check code format and ESLint rules:
 ```bash
 npm run lint
 ```
-
----
-
-## 🎛️ Deployment Instructions
-
-Our system leverages a GitOps-based push-to-deploy strategy:
-1. Merge your code changes into the `main` or `master` branch.
-2. The GitHub Action CI runners will build, lint, and run tests.
-3. Once tests pass, the Docker Push action builds and tags the production container, pushing it to Docker Hub.
-4. The deployment workflow triggers, connecting to the target server via SSH.
-5. The server runs `docker compose pull` to grab the latest build, and restarts the containers with zero downtime.
 
 ---
 

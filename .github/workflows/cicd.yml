@@ -5,14 +5,11 @@
 # that displays as one connected graph in the GitHub Actions UI.
 #
 # Pipeline Flow:
-#   Build → Lint → Test → Security → Docker Build → Docker Push → Release → Deploy
+#   Build → Lint → Test → Security → Docker Build → Docker Push → Release
 #
 # Required GitHub Secrets:
 #   - DOCKER_USERNAME    : Docker Hub username
 #   - DOCKER_PASSWORD    : Docker Hub access token / password
-#   - SSH_PRIVATE_KEY    : (Optional) SSH key for deployment
-#   - SSH_USER           : (Optional) SSH username for deployment
-#   - SSH_HOST           : (Optional) SSH host for deployment
 # ============================================================================
 
 name: CI/CD Pipeline
@@ -23,12 +20,6 @@ on:
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
-    inputs:
-      deploy_enabled:
-        description: 'Enable deployment after pipeline completes'
-        required: false
-        default: 'false'
-        type: boolean
 
 # ── Concurrency Control ─────────────────────────────────────────────────────
 # Cancel in-progress runs for the same branch to save runner minutes.
@@ -366,68 +357,3 @@ jobs:
           echo "- **Release Notes**: Auto-generated from commits" >> $GITHUB_STEP_SUMMARY
           echo "- **Status**: ✅ Release published" >> $GITHUB_STEP_SUMMARY
 
-  # ════════════════════════════════════════════════════════════════════════════
-  # Stage 8: DEPLOY
-  # ════════════════════════════════════════════════════════════════════════════
-  # Deploys the application to a remote server via SSH.
-  # Gracefully skips if SSH secrets are not configured.
-  # Never fails the pipeline — deployment is optional.
-  deploy:
-    name: 🌐 Deploy
-    runs-on: ubuntu-latest
-    needs: [docker-push, release]
-    if: |
-      always() &&
-      needs.docker-push.result == 'success' &&
-      (needs.release.result == 'success' || needs.release.result == 'skipped') &&
-      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_enabled == 'true'))
-    environment: production
-    continue-on-error: true
-    timeout-minutes: 10
-
-    steps:
-      - name: 🔍 Check Deployment Secrets
-        id: check-secrets
-        run: |
-          if [ -n "${{ secrets.SSH_HOST }}" ] && [ -n "${{ secrets.SSH_USER }}" ] && [ -n "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
-            echo "available=true" >> $GITHUB_OUTPUT
-            echo "✅ SSH deployment secrets are configured"
-          else
-            echo "available=false" >> $GITHUB_OUTPUT
-            echo "⚠️ SSH deployment secrets not configured — skipping deployment"
-          fi
-
-      - name: 📥 Checkout Code
-        if: steps.check-secrets.outputs.available == 'true'
-        uses: actions/checkout@v4
-
-      - name: 🔑 Setup SSH Connection
-        if: steps.check-secrets.outputs.available == 'true'
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
-      - name: 🌐 Deploy to Production Server
-        if: steps.check-secrets.outputs.available == 'true'
-        run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'DEPLOY_SCRIPT'
-            cd /var/www/gocart
-            docker login -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.DOCKER_PASSWORD }}
-            docker compose pull
-            docker compose up -d --remove-orphans
-            docker image prune -f
-            echo "✅ Deployment completed at $(date -u)"
-          DEPLOY_SCRIPT
-
-      - name: 📝 Job Summary
-        if: always()
-        run: |
-          echo "## 🌐 Deploy Stage" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.check-secrets.outputs.available }}" == "true" ]; then
-            echo "- **Target**: Production server" >> $GITHUB_STEP_SUMMARY
-            echo "- **Method**: SSH + Docker Compose" >> $GITHUB_STEP_SUMMARY
-            echo "- **Status**: Deployment attempted" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- **Status**: ⏭️ Skipped (SSH secrets not configured)" >> $GITHUB_STEP_SUMMARY
-            echo "- Add \`SSH_HOST\`, \`SSH_USER\`, and \`SSH_PRIVATE_KEY\` secrets to enable deployment" >> $GITHUB_STEP_SUMMARY
-          fi
