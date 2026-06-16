@@ -9,7 +9,7 @@
 #
 # Required GitHub Secrets:
 #   - DOCKER_USERNAME    : Docker Hub username
-#   - DOCKER_PASSWORD    : Docker Hub access token / password HELLO
+#   - DOCKER_PASSWORD    : Docker Hub access token / password 
 # ============================================================================
 
 name: CI/CD Pipeline
